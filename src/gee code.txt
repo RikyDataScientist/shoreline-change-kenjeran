@@ -1,0 +1,59 @@
+var ROI = ee.Geometry.Polygon(
+    [[[112.785, -7.22],
+      [112.785, -7.253],
+      [112.807, -7.253],
+      [112.807, -7.22]]], null, false);
+
+Map.addLayer(ROI, {}, 'ROI');
+
+var YEAR = 2020;
+
+// fungsi cloud masking Sentinel-2 pmenggunakan QA60
+function maskS2clouds(image) {
+  var qa = image.select('QA60');
+  var cloudBitMask = 1 << 10;
+  var cirrusBitMask = 1 << 11;
+  var mask = qa.bitwiseAnd(cloudBitMask).eq(0)
+      .and(qa.bitwiseAnd(cirrusBitMask).eq(0));
+  return image.updateMask(mask).divide(10000)
+      .copyProperties(image, ['system:time_start']);
+}
+
+// Filter cloude perpiksel < 60%
+var collection = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+    .filterBounds(ROI)
+    .filterDate(YEAR + '-01-01', YEAR + '-12-31')
+    .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 60))
+    .map(maskS2clouds);
+
+// Cek jumlah citra yang lolos 
+print('Jumlah citra ' + YEAR + ':', collection.size());
+
+// Komposit median tahunan
+var IMG = collection.median().clip(ROI);
+print('Nama band IMG:', IMG.bandNames());
+Map.addLayer(IMG, {bands: ['B4','B3','B2'], min:0, max:0.3}, 'Komposit ' + YEAR);
+
+// NDWI = (Green - NIR) / (Green + NIR)
+var NDWI = IMG.normalizedDifference(['B3', 'B8']).rename('NDWI');
+Map.addLayer(NDWI, {min:-1, max:1, palette:['red','white','blue']}, 'NDWI ' + YEAR, false);
+
+// ekstraksi air
+var waterMask = NDWI.gt(0).selfMask();
+
+var vectors = waterMask.reduceToVectors({
+  geometry: ROI,
+  scale: 10,
+  geometryType: 'polygon',
+  eightConnected: true,
+  maxPixels: 1e13,
+  crs: 'EPSG:32749'
+});
+
+Map.addLayer(vectors, {color: 'yellow'}, 'DSAS_NDWI_ ' + YEAR);
+
+Export.table.toDrive({
+  collection: vectors,
+  description: 'DSAS_NDWI_' + YEAR,
+  fileFormat: 'SHP'
+});
